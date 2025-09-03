@@ -13,6 +13,7 @@ from sklearn import linear_model
 import random
 from nav_msgs.msg import Path
 from geometry_msgs.msg import PoseStamped
+from visualization_msgs.msg import MarkerArray
 
 # ignore sklearn warnings
 from warnings import simplefilter
@@ -33,6 +34,7 @@ from utils import (
 try:
     sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
     from bev_transform import BEVTransform as BEVConfigTransform
+    from lane_visualizer import LaneVisualizer
     BEV_CONFIG_AVAILABLE = True
 except ImportError as e:
     BEV_CONFIG_AVAILABLE = False
@@ -158,7 +160,8 @@ class CURVEFit:
         x_range=20,  # BEV config의 실제 길이에 맞춤 (20미터)
         dx=0.5,
         min_pts=50,
-        max_tri=5
+        max_tri=5,
+        temporal_alpha=0.7  # 시간적 평활화 계수 (0.7 = 이전 프레임 70% + 현재 프레임 30%)
     ):
         self.order = order
         self.lane_width = lane_width
@@ -167,8 +170,16 @@ class CURVEFit:
         self.dx = dx
         self.min_pts = min_pts
         self.max_trials = max_tri
+        self.temporal_alpha = temporal_alpha
 
         self.lane_path = Path()
+        
+        # 시간적 평활화를 위한 이전 프레임 데이터 저장
+        self.prev_y_pred_l = None
+        self.prev_y_pred_r = None
+        self.prev_x_pred = None
+        self.detection_confidence = 0.0  # 검출 신뢰도 (0~1)
+        self.no_detection_count = 0      # 연속 검출 실패 카운트
 
         try:
             # sklearn 1.2+ 버전
@@ -209,18 +220,27 @@ class CURVEFit:
 
     def _init_model(self):
         X = np.stack([np.arange(0, 2, 0.02)**i for i in reversed(range(1, self.order+1))]).T
-        y_l = 0.5*self.lane_width*np.ones_like(np.arange(0, 2, 0.02))
-        y_r = -0.5*self.lane_width*np.ones_like(np.arange(0, 2, 0.02))
+        # 3.7m 차선 폭에 맞춰 초기화
+        y_l = 1.85*np.ones_like(np.arange(0, 2, 0.02))   # 좌측: +1.85m (3.7/2)
+        y_r = -1.85*np.ones_like(np.arange(0, 2, 0.02))  # 우측: -1.85m
 
         self.ransac_left.fit(X, y_l)
         self.ransac_right.fit(X, y_r)
 
     def preprocess_pts(self, lane_pts):
+        # 기존 샘플링 전략 유지
         idx_list = []
 
         for d in np.arange(0, self.x_range, self.dx):
             idx_full_list = np.where(np.logical_and(lane_pts[0, :]>=d, lane_pts[0, :]<d+self.dx))[0].tolist()
-            idx_list += random.sample(idx_full_list, np.minimum(self.min_pts, len(idx_full_list)))
+            # 포인트가 적을 때는 최소 1개라도 선택하도록 수정
+            if len(idx_full_list) > 0:
+                sample_count = max(1, min(self.min_pts, len(idx_full_list)))
+                idx_list += random.sample(idx_full_list, sample_count)
+
+        if len(idx_list) == 0:
+            rospy.logwarn("No points found in any segment")
+            return np.array([]), np.array([]), np.array([]), np.array([])
 
         lane_pts = lane_pts[:, idx_list]
         
@@ -230,34 +250,73 @@ class CURVEFit:
         if len(x_g) == 0:
             return np.array([]), np.array([]), np.array([]), np.array([])
 
-        X_g = np.stack([x_g**i for i in reversed(range(1, self.order+1))]).T
-        
-        try:
-            y_ransac_collect_r = self.ransac_right.predict(X_g)
-            y_right = y_g[np.logical_and(y_g>=y_ransac_collect_r-self.y_margin, y_g<y_ransac_collect_r+self.y_margin)]
-            x_right = x_g[np.logical_and(y_g>=y_ransac_collect_r-self.y_margin, y_g<y_ransac_collect_r+self.y_margin)]
+        # 실제 y 좌표 분포 확인 (디버깅용)
+        rospy.loginfo_throttle(3.0, f"Y coordinate range: min={np.min(y_g):.2f}, max={np.max(y_g):.2f}, mean={np.mean(y_g):.2f}")
 
-            y_ransac_collect_l = self.ransac_left.predict(X_g)
-            y_left = y_g[np.logical_and(y_g>=y_ransac_collect_l-self.y_margin, y_g<y_ransac_collect_l+self.y_margin)]
-            x_left = x_g[np.logical_and(y_g>=y_ransac_collect_l-self.y_margin, y_g<y_ransac_collect_l+self.y_margin)]
-        except:
-            return np.array([]), np.array([]), np.array([]), np.array([])
+        # **간단한 중심 기준 좌우 분류**
+        # 차량(BEV 하단 중심)을 기준으로 좌우 구분
+        center_y = 0.0  # 차량 중심선 (Y=0)
+        
+        # 좌측: Y > 0 (양수), 우측: Y < 0 (음수)
+        left_mask = y_g > center_y
+        right_mask = y_g < center_y
+        
+        x_left = x_g[left_mask]
+        y_left = y_g[left_mask]
+        x_right = x_g[right_mask]
+        y_right = y_g[right_mask]
+        
+        rospy.loginfo_throttle(2.0, f"Center-based classification - Left: {len(x_left)}, Right: {len(x_right)}")
+        if len(y_left) > 0:
+            rospy.loginfo_throttle(3.0, f"Left Y range: {np.min(y_left):.2f} to {np.max(y_left):.2f}")
+        else:
+            rospy.loginfo_throttle(3.0, "Left Y range: None")
+            
+        if len(y_right) > 0:
+            rospy.loginfo_throttle(3.0, f"Right Y range: {np.min(y_right):.2f} to {np.max(y_right):.2f}")
+        else:
+            rospy.loginfo_throttle(3.0, "Right Y range: None")
 
         return x_left, y_left, x_right, y_right
 
     def fit_curve(self, lane_pts):
         if lane_pts.size == 0:
-            return None, None, None
+            # 검출 실패 시 이전 프레임 데이터 사용
+            return self._handle_no_detection()
             
         x_left, y_left, x_right, y_right = self.preprocess_pts(lane_pts)
         
+        # 디버깅 정보 추가
+        rospy.loginfo_throttle(1.0, f"Preprocessed points - Left: {len(x_left)}, Right: {len(x_right)}")
+        
         if len(y_left)==0 or len(y_right)==0:
-            self._init_model()
-            x_left, y_left, x_right, y_right = self.preprocess_pts(lane_pts)
+            rospy.logwarn_throttle(1.0, "One side has no points, using fallback classification")
+            # 중심 기준 분류는 이미 적용되었으므로, 빈 쪽에 가상 점 추가하지 않음
+            # RANSAC 모델은 기존 초기화된 상태 유지
 
         if len(x_left) == 0 and len(x_right) == 0:
-            return None, None, None
+            rospy.logwarn("No points found on either side after preprocessing")
+            return self._handle_no_detection()
 
+        # 현재 프레임에서 차선 피팅 시도
+        current_x_pred, current_y_pred_l, current_y_pred_r = self._fit_current_frame(x_left, y_left, x_right, y_right)
+        
+        if current_x_pred is None:
+            return self._handle_no_detection()
+        
+        # 시간적 평활화 적용
+        smoothed_x_pred, smoothed_y_pred_l, smoothed_y_pred_r = self._apply_temporal_smoothing(
+            current_x_pred, current_y_pred_l, current_y_pred_r
+        )
+        
+        # 성공적인 검출 후 상태 업데이트
+        self.detection_confidence = min(1.0, self.detection_confidence + 0.2)
+        self.no_detection_count = 0
+        
+        return smoothed_x_pred, smoothed_y_pred_l, smoothed_y_pred_r
+
+    def _fit_current_frame(self, x_left, y_left, x_right, y_right):
+        """현재 프레임 데이터로만 차선 피팅"""
         try:
             if len(y_left) >= self.ransac_left.min_samples:
                 X_left = np.stack([x_left**i for i in reversed(range(1, self.order+1))]).T
@@ -269,7 +328,7 @@ class CURVEFit:
         except:
             return None, None, None
     
-        # predict the curve (차량 바로 앞부터 시작)
+        # predict the curve (내 코드 유지: 차량 바로 앞부터 시작)
         x_pred = np.arange(0.5, self.x_range, self.dx).astype(np.float32)
         X_pred = np.stack([x_pred**i for i in reversed(range(1, self.order+1))]).T
         
@@ -289,10 +348,61 @@ class CURVEFit:
             y_pred_r = y_pred_l - self.lane_width
 
         return x_pred, y_pred_l, y_pred_r
+    
+    def _apply_temporal_smoothing(self, current_x_pred, current_y_pred_l, current_y_pred_r):
+        """이전 프레임과 현재 프레임의 가중 평균"""
+        if self.prev_y_pred_l is None or self.prev_y_pred_r is None:
+            # 첫 번째 프레임이거나 이전 데이터 없음
+            self.prev_x_pred = current_x_pred.copy()
+            self.prev_y_pred_l = current_y_pred_l.copy()
+            self.prev_y_pred_r = current_y_pred_r.copy()
+            return current_x_pred, current_y_pred_l, current_y_pred_r
+        
+        # 이동평균 필터: previous * alpha + current * (1 - alpha)
+        smoothed_y_pred_l = self.temporal_alpha * self.prev_y_pred_l + (1 - self.temporal_alpha) * current_y_pred_l
+        smoothed_y_pred_r = self.temporal_alpha * self.prev_y_pred_r + (1 - self.temporal_alpha) * current_y_pred_r
+        
+        # 이전 프레임 데이터 업데이트
+        self.prev_x_pred = current_x_pred.copy()
+        self.prev_y_pred_l = smoothed_y_pred_l.copy()
+        self.prev_y_pred_r = smoothed_y_pred_r.copy()
+        
+        rospy.loginfo_throttle(3.0, f"Applied temporal smoothing with alpha={self.temporal_alpha}")
+        
+        return current_x_pred, smoothed_y_pred_l, smoothed_y_pred_r
+    
+    def _handle_no_detection(self):
+        """검출 실패 시 이전 프레임 데이터 사용"""
+        self.no_detection_count += 1
+        self.detection_confidence = max(0.0, self.detection_confidence - 0.3)
+        
+        # 연속 검출 실패가 너무 많으면 데이터 리셋
+        if self.no_detection_count > 10:
+            rospy.logwarn("Too many consecutive detection failures, resetting temporal data")
+            self.prev_y_pred_l = None
+            self.prev_y_pred_r = None
+            self.prev_x_pred = None
+            self.detection_confidence = 0.0
+            return None, None, None
+        
+        # 이전 프레임 데이터가 있으면 그것을 사용
+        if self.prev_y_pred_l is not None and self.prev_y_pred_r is not None:
+            rospy.logwarn_throttle(1.0, f"No detection, using previous frame data (confidence: {self.detection_confidence:.2f})")
+            return self.prev_x_pred.copy(), self.prev_y_pred_l.copy(), self.prev_y_pred_r.copy()
+        
+        return None, None, None
 
     def update_lane_width(self, y_pred_l, y_pred_r):
-        temp = np.clip(np.max(y_pred_l-y_pred_r), 2.0, 6.0)  # BEV에 맞는 범위로 조정
-        self.lane_width = 4.0 if temp < 2.0 else temp
+        # 실제 측정된 차선폭 계산
+        measured_width = np.mean(y_pred_l - y_pred_r)
+        
+        # 합리적인 범위 내에서만 업데이트 (3.0m ~ 4.5m)
+        if 3.0 <= measured_width <= 4.5:
+            # 급격한 변화 방지: 기존 값과 측정값의 가중 평균
+            self.lane_width = 0.9 * self.lane_width + 0.1 * measured_width
+            rospy.loginfo_throttle(5.0, f"Lane width updated: {self.lane_width:.2f}m (measured: {measured_width:.2f}m)")
+        else:
+            rospy.logwarn_throttle(5.0, f"Unrealistic lane width detected: {measured_width:.2f}m, keeping current: {self.lane_width:.2f}m")
 
     def write_path_msg(self, x_pred, y_pred_l, y_pred_r, frame_id='/map'):
         self.lane_path = Path()
@@ -332,7 +442,7 @@ def extract_lane_points_from_bev(bev_mask, real_scale):
     # 픽셀 좌표를 실제 미터 좌표로 변환
     # Y=0이 상단, Y=800이 하단 (앞쪽이 하단)
     x_real = (bev_height - lane_pixels[:, 1]) * real_scale  # Y픽셀 -> X실제 (앞방향, 하단이 멀리)
-    y_real = (lane_pixels[:, 0] - bev_width/2) * real_scale  # X픽셀 -> Y실제 (좌우방향, 중심기준)
+    y_real = (bev_width/2 - lane_pixels[:, 0]) * real_scale  # X픽셀 -> Y실제 (좌우방향, 중심기준, 부호 반전)
     
     # 앞쪽 방향만 선택 (x > 0) 및 범위 제한
     valid_mask = (x_real > 0) & (x_real < 20) & (np.abs(y_real) < 3)
@@ -365,11 +475,11 @@ def draw_fitted_lanes_on_bev(bev_image, x_pred, y_pred_l, y_pred_r, real_scale):
     # 실제 좌표를 BEV 픽셀 좌표로 변환 (extract_lane_points_from_bev와 동일한 방식)
     for i in range(len(x_pred)):
         # 좌측 차선 - 실제 좌표를 픽셀 좌표로 변환
-        pixel_x_l = int(bev_width/2 + y_pred_l[i] / real_scale)  # y_real -> x_pixel
+        pixel_x_l = int(bev_width/2 - y_pred_l[i] / real_scale)  # y_real -> x_pixel (부호 반전)
         pixel_y_l = int(bev_height - x_pred[i] / real_scale)      # x_real -> y_pixel (역변환)
         
         # 우측 차선
-        pixel_x_r = int(bev_width/2 + y_pred_r[i] / real_scale)  # y_real -> x_pixel
+        pixel_x_r = int(bev_width/2 - y_pred_r[i] / real_scale)  # y_real -> x_pixel (부호 반전)
         pixel_y_r = int(bev_height - x_pred[i] / real_scale)      # x_real -> y_pixel (역변환)
         
         # BEV 이미지 범위 내에서만 그리기
@@ -421,17 +531,21 @@ class BEVNode:
         self.bev_config_transform = None
         self.setup_bev_transform()
         
-        # Lane fitting 초기화
+        # Lane fitting 초기화 (시간적 평활화 추가)
         self.curve_fitter = CURVEFit(
             order=3,
-            alpha=10,
-            lane_width=4.0,  # BEV config 실제 폭
-            y_margin=1.0,    # 더 관대하게
-            x_range=20,      # BEV config 실제 길이
+            alpha=5,         # 내 코드 유지
+            lane_width=3.7,  # 차선 폭을 3.7m로 설정
+            y_margin=0.8,    # 차선 분리를 위해 더 엄격하게 설정
+            x_range=20,      # 내 코드 유지 (더 긴 범위)
             dx=0.5,
-            min_pts=10,      # 더 적은 포인트로도 시도
-            max_tri=10       # 더 많이 시도
+            min_pts=8,       # 적은 포인트 상황에서도 작동하도록 감소
+            max_tri=50,      # 더 많은 시도로 정확도 향상
+            temporal_alpha=0.7  # 이동평균 필터: 70% 이전 + 30% 현재
         )
+        
+        # Lane visualizer 초기화
+        self.lane_visualizer = LaneVisualizer()
         
         # 발행자 초기화
         self.lane_seg_pub = rospy.Publisher('lane_seg', Image, queue_size=1)
@@ -440,6 +554,9 @@ class BEVNode:
         self.original_bev_pub = rospy.Publisher('original_bev', Image, queue_size=1)
         self.lane_path_pub = rospy.Publisher('lane_path', Path, queue_size=1)
         self.lane_fitted_bev_pub = rospy.Publisher('lane_fitted_bev', Image, queue_size=1)
+        self.lane_markers_pub = rospy.Publisher('lane_markers', MarkerArray, queue_size=1)
+        self.lane_boundary_markers_pub = rospy.Publisher('lane_boundary_markers', MarkerArray, queue_size=1)
+        self.lane_info_markers_pub = rospy.Publisher('lane_info_markers', MarkerArray, queue_size=1)
         
         # 구독자 초기화
         if self.compressed_input:
@@ -722,13 +839,39 @@ class BEVNode:
                         rospy.loginfo(f"Lane fitting successful: {len(x_pred)} points")
                     else:
                         rospy.logwarn("Lane fitting failed")
+                        # 실패 시 마커 지우기
+                        clear_markers = self.lane_visualizer.clear_all_markers(data.header.stamp, frame_id='ego_car')
+                        self.lane_markers_pub.publish(clear_markers)
+                        self.lane_boundary_markers_pub.publish(MarkerArray())
+                        self.lane_info_markers_pub.publish(MarkerArray())
                     
                     # Lane path 메시지 생성 및 발행
                     if x_pred is not None:
-                        self.curve_fitter.write_path_msg(x_pred, y_pred_l, y_pred_r, frame_id='/map')
+                        self.curve_fitter.write_path_msg(x_pred, y_pred_l, y_pred_r, frame_id='ego_car')
                         lane_path = self.curve_fitter.get_lane_path()
                         lane_path.header.stamp = data.header.stamp
                         self.lane_path_pub.publish(lane_path)
+                        
+                        # Lane markers 생성 및 발행 (실스케일)
+                        lane_markers = self.lane_visualizer.create_lane_markers(
+                            x_pred, y_pred_l, y_pred_r, data.header.stamp, frame_id='ego_car'
+                        )
+                        self.lane_markers_pub.publish(lane_markers)
+                        
+                        # Lane boundary markers 생성 및 발행
+                        boundary_markers = self.lane_visualizer.create_lane_boundary_markers(
+                            x_pred, y_pred_l, y_pred_r, data.header.stamp, frame_id='ego_car'
+                        )
+                        self.lane_boundary_markers_pub.publish(boundary_markers)
+                        
+                        # Lane info text markers 생성 및 발행
+                        info_markers = self.lane_visualizer.create_lane_info_text_marker(
+                            x_pred, y_pred_l, y_pred_r, data.header.stamp, frame_id='ego_car'
+                        )
+                        self.lane_info_markers_pub.publish(info_markers)
+                        
+                        rospy.loginfo_throttle(2.0, f"Published lane markers: {len(x_pred)} points, "
+                                             f"avg width: {np.mean(y_pred_l - y_pred_r):.2f}m")
                         
                         # Fitted lanes를 BEV 이미지에 그리기
                         lane_fitted_bev = draw_fitted_lanes_on_bev(ll_seg_mask_bev, x_pred, y_pred_l, y_pred_r, real_scale)

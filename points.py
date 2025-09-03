@@ -11,7 +11,7 @@ paused_frame = None
 bridge = CvBridge()
 
 # 실제 거리 설정 (여기서 수정하세요)
-REAL_WIDTH = 4.0    # 실제 가로 길이 (미터)
+REAL_WIDTH = 7.4    # 실제 가로 길이 (미터)
 REAL_HEIGHT = 20.0  # 실제 세로 길이 (미터)
 BEV_HEIGHT = 800    # BEV 출력 세로 픽셀
 
