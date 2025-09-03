@@ -6,12 +6,15 @@ find_package(catkin REQUIRED COMPONENTS
   rospy
   std_msgs
   sensor_msgs
+  geometry_msgs
+  nav_msgs
+  visualization_msgs
   cv_bridge
   image_transport
 )
 
 catkin_package(
-  CATKIN_DEPENDS roscpp rospy std_msgs sensor_msgs cv_bridge image_transport
+  CATKIN_DEPENDS roscpp rospy std_msgs sensor_msgs geometry_msgs nav_msgs visualization_msgs cv_bridge image_transport
 )
 
 include_directories(
@@ -20,6 +23,7 @@ include_directories(
 
 catkin_install_python(PROGRAMS
   scripts/cream_ioniq_node.py
+  scripts/cream_ioniq_node_modular.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 
@@ -29,4 +33,9 @@ install(DIRECTORY launch/
 
 install(DIRECTORY config/
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION}/config
+)
+
+install(DIRECTORY src/${PROJECT_NAME}/
+  DESTINATION ${CATKIN_PACKAGE_PYTHON_DESTINATION}
+  FILES_MATCHING PATTERN "*.py"
 ) 

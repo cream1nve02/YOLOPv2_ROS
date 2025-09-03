@@ -12,6 +12,7 @@ class LaneVisualizer:
     
     def __init__(self):
         self.marker_id_counter = 0
+    
         
     def create_lane_markers(self, x_pred, y_pred_l, y_pred_r, timestamp, frame_id='ego_car'):
         """
@@ -32,7 +33,7 @@ class LaneVisualizer:
             
         marker_array = MarkerArray()
         
-        # 좌측 차선 마커 생성
+        # 좌측 차선 마커 생성 (초록색)
         left_marker = self._create_line_strip_marker(
             x_pred, y_pred_l, timestamp, frame_id,
             marker_id=0,
@@ -41,7 +42,7 @@ class LaneVisualizer:
         )
         marker_array.markers.append(left_marker)
         
-        # 우측 차선 마커 생성
+        # 우측 차선 마커 생성 (빨간색)
         right_marker = self._create_line_strip_marker(
             x_pred, y_pred_r, timestamp, frame_id,
             marker_id=1,

@@ -1,0 +1,164 @@
+# CREAM IONIQ 차선 검출 시스템 설정 파일
+# 
+# 이 파일에서 차선 검출의 모든 파라미터들을 조정할 수 있음.
+# 실제 도로 환경이나 카메라 설정에 맞춰서 값들을 튜닝하면 됨.
+
+# === YOLO 모델 관련 설정 ===
+yolo:
+  # 모델 파일 경로 (TorchScript 형태)
+  weights_path: "/home/mini/catkin_ws/src/cream_ioniq/pretrained/yolopv2.pt"
+  
+  # 입력 이미지 크기 (정사각형)
+  input_size: 640
+  
+  # 사용할 디바이스 (0=첫번째GPU, cpu=CPU)
+  device: "0"
+  
+  # Half precision 사용 여부 (GPU에서만 의미있음)
+  use_half_precision: true
+
+# === 카메라 입력 관련 설정 ===
+camera:
+  # 입력 토픽 이름
+  image_topic: "/gmsl_camera/dev/video1/compressed"
+  
+  # 압축된 이미지 사용 여부
+  use_compressed: true
+  
+  # 처리할 이미지 크기 (YOLO 전에 리사이즈)
+  process_width: 1280
+  process_height: 720
+
+# === BEV 변환 관련 설정 ===
+bev_transform:
+  # BEV 설정 파일 경로
+  config_path: "/home/mini/catkin_ws/src/cream_ioniq/bev_config.json"
+  
+  # 왜곡 보정 적용 여부
+  apply_undistortion: true
+
+# === 차선 피팅 파라미터 ===
+lane_fitting:
+  # 다항식 차수 (일반적으로 3차가 적당함)
+  polynomial_order: 3
+  
+  # LASSO 정규화 강도 (클수록 더 부드러운 곡선)
+  lasso_alpha: 5.0
+  
+  # 기본 차선 폭 (미터) - 한국 도로 기준
+  default_lane_width: 3.7
+  
+  # 좌우 분류 마진 (미터)
+  classification_margin: 0.8
+  
+  # 예측 범위 (미터) - 차량 앞쪽으로 얼마나 멀리 예측할지
+  prediction_range: 20.0
+  
+  # 예측 간격 (미터) - 점과 점 사이의 거리
+  prediction_step: 0.5
+  
+  # RANSAC 최소 점 개수
+  min_points: 8
+  
+  # RANSAC 최대 시도 횟수
+  max_trials: 50
+
+# === 시간적 평활화 설정 ===
+temporal_smoothing:
+  # 평활화 계수 (0~1, 클수록 이전 프레임에 더 의존)
+  # 0.7 = 이전 70% + 현재 30%
+  alpha: 0.7
+  
+  # 연속 검출 실패 허용 횟수
+  max_no_detection_frames: 10
+
+# === 이미지 전처리 설정 ===
+image_preprocessing:
+  # 강력한 가로선 제거 사용 여부
+  aggressive_horizontal_removal: true
+  
+  # 차선 스켈레톤화 적용 여부
+  apply_thinning: true
+  
+  # 가로선 판단 기준 (가로/세로 비율)
+  horizontal_ratio_threshold: 1.8
+  
+  # 최소 높이 기준 (픽셀)
+  min_height_threshold: 20
+
+# === ROS 토픽 설정 ===
+topics:
+  # 발행할 토픽들
+  publishers:
+    lane_segmentation: "lane_seg"
+    lane_segmentation_processed: "lane_seg_processed"  
+    lane_segmentation_bev: "lane_seg_bev"
+    original_bev: "original_bev"
+    lane_path: "lane_path"
+    lane_fitted_bev: "lane_fitted_bev"
+    lane_markers: "lane_markers"
+    lane_boundary_markers: "lane_boundary_markers"
+    lane_info_markers: "lane_info_markers"
+
+# === 시각화 설정 ===
+visualization:
+  # 마커 지속 시간 (초)
+  marker_lifetime: 0.2
+  
+  # 차선 선 두께 (미터)
+  line_width: 0.1
+  
+  # 차선 점 크기 (미터)
+  point_size: 0.1
+  
+  # 좌측 차선 색상 (RGBA)
+  left_lane_color: [0.0, 1.0, 0.0, 0.8]  # 초록색
+  
+  # 우측 차선 색상 (RGBA) 
+  right_lane_color: [1.0, 0.0, 0.0, 0.8]  # 빨간색
+  
+  # 중앙선 색상 (RGBA)
+  center_line_color: [0.0, 0.0, 1.0, 0.6]  # 파란색
+  
+  # 차선 영역 색상 (RGBA, 반투명)
+  lane_area_color: [0.5, 0.5, 0.5, 0.3]  # 회색
+
+# === 디버깅 설정 ===
+debug:
+  # 디버그 로그 출력 여부
+  enable_debug_logs: true
+  
+  # 중간 이미지 저장 여부
+  save_intermediate_images: false
+  
+  # 이미지 저장 경로
+  save_path: "/tmp/cream_ioniq_debug/"
+  
+  # 성능 측정 여부
+  measure_performance: false
+
+# === 성능 튜닝 설정 ===
+performance:
+  # 큐 크기 (메모리 사용량과 지연시간 트레이드오프)
+  queue_size: 1
+  
+  # 버퍼 크기 (압축 이미지용, 바이트 단위)
+  buffer_size: 16777216  # 16MB
+  
+  # 스레딩 사용 여부
+  use_threading: false
+  
+  # 프레임 스킵 (1=모든 프레임, 2=한 프레임 걸러서 처리)
+  frame_skip: 1
+
+# === 안전 설정 ===
+safety:
+  # 차선 폭 허용 범위 (미터)
+  lane_width_min: 3.0
+  lane_width_max: 4.5
+  
+  # 최대 곡률 제한 (1/미터)
+  max_curvature: 0.1
+  
+  # 차선 유효성 검사 여부
+  validate_lanes: true

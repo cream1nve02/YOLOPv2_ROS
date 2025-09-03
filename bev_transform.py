@@ -175,7 +175,8 @@ class BEVTransform:
             'real_dimensions': self.config['real_dimensions'],
             'bev_size': self.bev_size,
             'source_points': self.config['source_points'],
-            'destination_points': self.config['destination_points']
+            'destination_points': self.config['destination_points'],
+            'transformation_matrix': self.transformation_matrix.tolist()
         }
 
 # 사용 예제 함수들

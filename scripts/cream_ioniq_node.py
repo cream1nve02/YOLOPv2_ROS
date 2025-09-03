@@ -463,6 +463,7 @@ def extract_lane_points_from_bev(bev_mask, real_scale):
     return xyz_g
 
 
+
 def draw_fitted_lanes_on_bev(bev_image, x_pred, y_pred_l, y_pred_r, real_scale):
     """BEV 이미지에 fitting된 차선을 그리는 함수"""
     if x_pred is None or y_pred_l is None or y_pred_r is None:
@@ -815,7 +816,7 @@ class BEVNode:
                     # 3단계: 컴포넌트 분석으로 남은 가로선 제거  
                     ll_filtered = self.filter_horizontal_lines(ll_step2, horizontal_ratio_threshold=1.8)
                     
-                    # 4단계: 마지막에 차선을 얇게 만들기
+                    # 4단계: 마지막에 차선을 얇게 만들기 (BEV 변환용)
                     ll_thinned = self.thin_lanes(ll_filtered)
                     
                     # BEV 변환 (전처리된 차선 마스크 사용)
@@ -852,7 +853,7 @@ class BEVNode:
                         lane_path.header.stamp = data.header.stamp
                         self.lane_path_pub.publish(lane_path)
                         
-                        # Lane markers 생성 및 발행 (실스케일)
+                        # Lane markers 생성 및 발행 (기본 색상)
                         lane_markers = self.lane_visualizer.create_lane_markers(
                             x_pred, y_pred_l, y_pred_r, data.header.stamp, frame_id='ego_car'
                         )
