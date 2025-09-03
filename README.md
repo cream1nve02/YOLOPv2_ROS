@@ -48,6 +48,7 @@ source devel/setup.bash
 
 ## Published Topics
 - `/yolopv2/yolo_lane_seg` (sensor_msgs/Image): Lane segmentation result (grayscale image, lanes are white)
+- `/yolopv2/yolo_lane_seg_bev` (sensor_msgs/Image): Lane segmentation result in bird's eye view
 - `/yolopv2/yolo_drive_area` (sensor_msgs/Image): Drivable area segmentation result
 - `/yolopv2/yolo_result_image` (sensor_msgs/Image): Visualized result on the original image
 
@@ -62,4 +63,4 @@ source devel/setup.bash
 - `~device` (string): Device to use for inference (e.g., '0' for CUDA, 'cpu' for CPU)
 
 ## Creator
-Chaemin Park 
+Chaemin Park # CREAM_IONIQ
