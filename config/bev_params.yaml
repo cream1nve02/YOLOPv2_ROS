@@ -1,0 +1,19 @@
+# CREAM IONIQ 차선 검출 노드 파라미터
+
+# 모델 가중치 파일 경로
+weights: "/home/mini/catkin_ws/src/cream_ioniq/pretrained/yolopv2.pt"
+
+# 입력 이미지 크기
+img_size: 640
+
+# 이미지 토픽
+image_topic: "/gmsl_camera/dev/video1/compressed"
+
+# 압축 이미지 입력 여부
+compressed_input: true
+
+# 디바이스 설정 (cuda:0, cpu 등)
+device: "0"
+
+# BEV 설정 파일 경로
+bev_config_path: "/home/mini/catkin_ws/src/cream_ioniq/bev_config.json"

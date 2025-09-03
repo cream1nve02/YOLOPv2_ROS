@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.0.2)
-project(yolopv2_ros)
+project(cream_ioniq)
 
 find_package(catkin REQUIRED COMPONENTS
   roscpp
@@ -19,7 +19,7 @@ include_directories(
 )
 
 catkin_install_python(PROGRAMS
-  scripts/yolopv2_node.py
+  scripts/cream_ioniq_node.py
   DESTINATION ${CATKIN_PACKAGE_BIN_DESTINATION}
 )
 

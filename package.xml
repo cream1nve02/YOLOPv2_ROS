@@ -1,8 +1,8 @@
 <?xml version="1.0"?>
 <package format="2">
-  <name>yolopv2_ros</name>
+  <name>cream_ioniq</name>
   <version>0.0.1</version>
-  <description>YOLOPv2 차선 검출 ROS 노드</description>
+  <description>CREAM IONIQ 차선 검출 및 lane fitting 패키지</description>
 
   <maintainer email="user@user.com">gigacha</maintainer>
 
